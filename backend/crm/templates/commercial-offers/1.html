@@ -1,0 +1,21 @@
+{% load bleach_tags %}
+
+<!DOCTYPE html>
+<html>
+  <body>
+    <h1>Коммерческое предложение</h1>
+    <p>Менеджер: {{ user.first_name }} {{ user.last_name }}</p>
+    <p>Компания: {{ company.name }} {{ company.executive_name }}</p>
+    <p>Товар: {{ product.name }} {{ product.price }}р</p>
+    <ul>
+      {% for key, value in product.data.items %}<li>{{ key }} - {{ value }}</li>{% endfor %}
+    </ul>
+    {% for pdf_block in pdf_blocks %}
+      <p>
+        <img src="{{ pdf_block.image.url }}" alt="{{ pdf_block.name }}" />
+        <span>{{ pdf_block.text|bleach }}</span>
+      </p>
+    {% endfor %}
+    <img src="{{ qr_code }}" alt="qr code" />
+  </body>
+</html>

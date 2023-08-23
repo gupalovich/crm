@@ -1,0 +1,61 @@
+stages:
+  - test
+  - build
+  - deploy
+
+variables:
+  POSTGRES_USER: "crm"
+  POSTGRES_PASSWORD: ""
+  POSTGRES_DB: "test_crm"
+  POSTGRES_HOST_AUTH_METHOD: trust
+  CELERY_BROKER_URL: "redis://redis:6379/0"
+
+before_script:
+  - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+  - echo -e $(handler --json=$(echo $ENV_BACKEND | jq -c) --key=$CI_COMMIT_REF_SLUG --type=1) > ./backend/.envs/.env
+  - echo -e $DOMAINS > ./backend/config/domains.json
+  - sed -i "s/__domains__/$(echo -e $(handler --json=$(echo $DOMAINS | jq -c) --key=$CI_COMMIT_REF_SLUG --type=2))/g" docker-compose.prod.yml
+  - sed -i "s/web:8000/${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}_web:8000/g" docker/nginx/nginx.conf
+  - sed -i "s/celery_flower:/${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}_celery_flower:/g" docker/nginx/nginx.conf
+  - sed -i "s/front:4000/${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}_front:4000/g" docker/nginx/nginx.conf
+  - sed -i "s/__flower_port__/$(echo -e $(handler --json=$(echo $ENV_BACKEND | jq -c) --key=$CI_COMMIT_REF_SLUG --nested_key=FLOWER_PORT --type=4))/g" docker-compose.prod.yml
+  - sed -i "s/__flower_port__/$(echo -e $(handler --json=$(echo $ENV_BACKEND | jq -c) --key=$CI_COMMIT_REF_SLUG --nested_key=FLOWER_PORT --type=4))/g" docker/nginx/nginx.conf
+  - sed -i "s/.defaul/.${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}/g" docker-compose.prod.yml
+  - sed -i "s/__branch__/${CI_COMMIT_REF_SLUG}/g" docker-compose.prod.yml
+  - sed -i "s/FLOWER_AUTH/${FLOWER_AUTH}/g" docker-compose.prod.yml
+
+pytest:
+  stage: test
+  image: docker/compose:1.29.2
+  tags:
+    - docker
+  services:
+    - docker:dind
+  before_script:
+    - docker-compose -f docker-compose.yml build
+    # Ensure celerybeat does not crash due to non-existent tables
+    - docker-compose -f docker-compose.yml run --rm django python manage.py migrate
+    - docker-compose -f docker-compose.yml up -d
+  script:
+    - docker-compose -f docker-compose.yml run django pytest
+  only:
+    - staging
+
+build:
+  stage: build
+  script:
+    - docker build -t $CI_REGISTRY/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME:${CI_COMMIT_REF_SLUG}_backend.$CI_PIPELINE_ID ./backend/
+    - docker push $CI_REGISTRY/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME:${CI_COMMIT_REF_SLUG}_backend.$CI_PIPELINE_ID
+    - docker build -t $CI_REGISTRY/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME:${CI_COMMIT_REF_SLUG}_nginx.$CI_PIPELINE_ID ./docker/nginx/
+    - docker push $CI_REGISTRY/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME:${CI_COMMIT_REF_SLUG}_nginx.$CI_PIPELINE_ID
+  only:
+    - staging
+
+deploy:
+  stage: deploy
+  script:
+    - '[[ "$(docker context ls -q | grep $(echo "${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}"))" == "" ]] || docker context rm $(echo "${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}")'
+    - docker context create --docker host=ssh://root@192.168.0.162 $(echo "${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}")
+    - docker --context $(echo "${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}") stack deploy --compose-file docker-compose.prod.yml --with-registry-auth $(echo "${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}")
+  only:
+    - staging

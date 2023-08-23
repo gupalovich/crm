@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+cd backend
+
+python manage.py migrate
+python manage.py create_groups
+exec python manage.py runserver 0.0.0.0:8000

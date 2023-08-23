@@ -1,0 +1,109 @@
+version: "3"
+
+volumes:
+  static:
+    driver: "local"
+    driver_opts:
+      type: "nfs"
+      o: "addr=sfs-nas1.ru-moscow-1.hc.sbercloud.ru,vers=3,timeo=600,nolock,rw"
+      device: ":/share-9f51c255/crm/__branch__/static"
+  media:
+    driver: "local"
+    driver_opts:
+      type: "nfs"
+      o: "addr=sfs-nas1.ru-moscow-1.hc.sbercloud.ru,vers=3,timeo=600,nolock,rw"
+      device: ":/share-9f51c255/crm/__branch__/media"
+
+networks:
+  traefik-public:
+    external: true
+
+services:
+  web:
+    image: ${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:${CI_COMMIT_REF_SLUG}_backend.${CI_PIPELINE_ID}
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             python manage.py migrate &&
+             python manage.py create_groups &&
+             gunicorn --bind :8000 --workers 4 app.wsgi:application"
+    restart: unless-stopped
+    volumes:
+      - media:/usr/src/app/app/media
+      - static:/usr/src/app/app/static
+    depends_on:
+      - redis
+    networks:
+      - traefik-public
+
+  celery_worker:
+    image: ${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:${CI_COMMIT_REF_SLUG}_backend.${CI_PIPELINE_ID}
+    command: sh -c "celery -A app worker -l info"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    volumes:
+      - media:/usr/src/app/app/media
+      - static:/usr/src/app/app/static
+    networks:
+      - traefik-public
+
+  celery_beat:
+    image: ${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:${CI_COMMIT_REF_SLUG}_backend.${CI_PIPELINE_ID}
+    command: sh -c "celery -A app beat -l info"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    volumes:
+      - media:/usr/src/app/app/media
+      - static:/usr/src/app/app/static
+    networks:
+      - traefik-public
+
+  celery_flower:
+    image: ${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:${CI_COMMIT_REF_SLUG}_backend.${CI_PIPELINE_ID}
+    command: sh -c "celery -A app flower --port=__flower_port__ --url_prefix=/flower --basic_auth=FLOWER_AUTH"
+    depends_on:
+      - celery_worker
+      - celery_beat
+      - redis
+    restart: unless-stopped
+    volumes:
+      - media:/usr/src/app/app/media
+      - static:/usr/src/app/app/static
+    expose:
+      - "__flower_port__"
+    networks:
+      - traefik-public
+
+  redis:
+    image: redis:7.0
+    restart: unless-stopped
+    expose:
+      - "6379"
+    networks:
+      - traefik-public
+
+  nginx:
+    image: ${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:${CI_COMMIT_REF_SLUG}_nginx.${CI_PIPELINE_ID}
+    restart: unless-stopped
+    depends_on:
+      # - front
+      - web
+    volumes:
+      - static:/static
+      - media:/media
+    networks:
+      - traefik-public
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=traefik-public
+        - traefik.constraint-label=traefik-public
+        - traefik.http.routers.defaul-http.rule=Host(__domains__)
+        - traefik.http.routers.defaul-http.entrypoints=http
+        - traefik.http.routers.defaul-http.middlewares=https-redirect
+        - traefik.http.routers.defaul-https.rule=Host(__domains__)
+        - traefik.http.routers.defaul-https.entrypoints=https
+        - traefik.http.routers.defaul-https.tls=true
+        - traefik.http.routers.defaul-https.tls.certresolver=le
+        - traefik.http.services.defaul.loadbalancer.server.port=80
